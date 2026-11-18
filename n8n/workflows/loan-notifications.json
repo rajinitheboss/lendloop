@@ -1,0 +1,312 @@
+{
+  "id": "LendLoopNotify01",
+  "name": "LendLoop · Loan notifications",
+  "nodes": [
+    {
+      "id": "LendLoopNotify01-node-1",
+      "name": "Loan event webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "6f1c2a8e-4b7d-4e59-9d3a-1e2d3c4b5a60",
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "lendloop/loan-events",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": true
+        }
+      }
+    },
+    {
+      "id": "LendLoopNotify01-node-2",
+      "name": "Verify signature",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Verify the HMAC signature Convex put on this webhook, using the exact raw\n// bytes that were signed (not a re-serialised copy of the parsed JSON).\n// Secret: env LENDLOOP_SECRET_CONVEX_TO_N8N. Never hard-code it here.\nconst crypto = require('crypto');\n\nconst MAX_SKEW_SECONDS = 300;\nconst secret = $env.LENDLOOP_SECRET_CONVEX_TO_N8N;\nif (!secret) {\n  throw new Error('LENDLOOP_SECRET_CONVEX_TO_N8N is not set in the n8n environment');\n}\n\nconst headers = $input.first().json.headers || {};\nconst timestamp = String(headers['x-lendloop-timestamp'] || '');\nconst signature = String(headers['x-lendloop-signature'] || '');\nconst raw = (await this.helpers.getBinaryDataBuffer(0, 'data')).toString('utf8');\n\nlet reason = null;\nif (!/^\\d{1,12}$/.test(timestamp) || !signature) {\n  reason = 'missing';\n} else if (Math.abs(Math.floor(Date.now() / 1000) - Number(timestamp)) > MAX_SKEW_SECONDS) {\n  reason = 'stale';\n} else {\n  const expected = Buffer.from(\n    'v1=' + crypto.createHmac('sha256', secret).update(`${timestamp}.${raw}`).digest('hex'),\n  );\n  const given = Buffer.from(signature);\n  if (expected.length !== given.length || !crypto.timingSafeEqual(expected, given)) {\n    reason = 'mismatch';\n  }\n}\nif (reason) {\n  return [{ json: { valid: false, reason } }];\n}\n\nconst event = JSON.parse(raw);\n// Idempotency: Convex may retry a delivery whose response was lost.\n// Event ids we already handled are kept in workflow static data.\nconst seen = $getWorkflowStaticData('global').seen || {};\nreturn [{ json: { valid: true, duplicate: Boolean(seen[event.id]), event } }];"
+      }
+    },
+    {
+      "id": "LendLoopNotify01-node-3",
+      "name": "Signature valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "signature-valid--cond",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "LendLoopNotify01-node-4",
+      "name": "Reject (401)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        660,
+        480
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"error\": \"invalid_signature\" } }}",
+        "options": {
+          "responseCode": 401
+        }
+      }
+    },
+    {
+      "id": "LendLoopNotify01-node-5",
+      "name": "Already handled?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "already-handled--cond",
+              "leftValue": "={{ $json.duplicate }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "LendLoopNotify01-node-6",
+      "name": "Acknowledge duplicate",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        880,
+        80
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": true, \"duplicate\": true } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "LendLoopNotify01-node-7",
+      "name": "Compose email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        280
+      ],
+      "parameters": {
+        "jsCode": "// Turn the (minimal) event into one email. The payload only contains the\n// recipient's first name and email, the tool name, dates and a link path.\nconst { event } = $input.first().json;\nconst appUrl = ($env.LENDLOOP_APP_URL || 'http://localhost:3000').replace(/\\/$/, '');\nconst link = appUrl + event.appPath;\nconst name = event.recipient.firstName;\nconst tool = event.tool.name;\n\nconst fmt = (iso) =>\n  new Date(iso + 'T00:00:00Z').toLocaleDateString('en-GB', {\n    day: 'numeric', month: 'short', timeZone: 'UTC',\n  });\nconst dates = event.loan.startDate === event.loan.endDate\n  ? fmt(event.loan.startDate)\n  : `${fmt(event.loan.startDate)} to ${fmt(event.loan.endDate)}`;\n\nconst templates = {\n  'loan.requested': {\n    subject: `New request to borrow your ${tool}`,\n    body: `A neighbour would like to borrow your ${tool} (${dates}).\\n\\nApprove or decline it here:\\n${link}`,\n  },\n  'loan.approved': {\n    subject: `Approved: you can borrow the ${tool}`,\n    body: `Good news! Your request to borrow the ${tool} (${dates}) was approved.\\n\\nDetails:\\n${link}`,\n  },\n  'loan.declined': {\n    subject: `Update on your request for the ${tool}`,\n    body: `Sorry, your request to borrow the ${tool} (${dates}) was declined this time.\\n\\nFind something similar:\\n${appUrl}/browse`,\n  },\n  'loan.cancelled': event.recipient.role === 'lender'\n    ? {\n        subject: `A request for your ${tool} was cancelled`,\n        body: `The borrower cancelled their request for your ${tool} (${dates}). No action needed.\\n\\n${link}`,\n      }\n    : {\n        subject: `Your request for the ${tool} was cancelled`,\n        body: `The listing for the ${tool} was removed, so your request (${dates}) was cancelled.\\n\\nFind something similar:\\n${appUrl}/browse`,\n      },\n  'loan.returned': {\n    subject: `Thanks for returning the ${tool}`,\n    body: `The lender marked the ${tool} as returned. Thanks for borrowing responsibly!\\n\\n${link}`,\n  },\n};\n\nconst t = templates[event.type];\nif (!t) throw new Error(`Unknown event type: ${event.type}`);\n\nreturn [{\n  json: {\n    eventId: event.id,\n    to: event.recipient.email,\n    subject: t.subject,\n    text: `Hi ${name},\\n\\n${t.body}\\n\\nLendLoop · Borrow what you need. Lend what you don't.`,\n  },\n}];"
+      }
+    },
+    {
+      "id": "LendLoopNotify01-node-8",
+      "name": "Send email",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1100,
+        280
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "LendLoopSmtp0001",
+          "name": "LendLoop SMTP"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "parameters": {
+        "fromEmail": "={{ $env.LENDLOOP_MAIL_FROM || 'LendLoop <no-reply@lendloop.local>' }}",
+        "toEmail": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": {
+          "appendAttribution": false
+        }
+      }
+    },
+    {
+      "id": "LendLoopNotify01-node-9",
+      "name": "Remember event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        280
+      ],
+      "parameters": {
+        "jsCode": "// Mark the event as handled only AFTER the email was sent, so a retry from\n// Convex after a failure still gets delivered, and a retry after success\n// does not send a second email. Keeps the most recent 1000 ids.\nconst store = $getWorkflowStaticData('global');\nconst seen = store.seen || {};\nseen[$('Compose email').first().json.eventId] = Date.now();\nconst ids = Object.keys(seen);\nif (ids.length > 1000) {\n  ids.sort((a, b) => seen[a] - seen[b]).slice(0, ids.length - 1000).forEach((id) => delete seen[id]);\n}\nstore.seen = seen;\nreturn [{ json: { ok: true } }];"
+      }
+    },
+    {
+      "id": "LendLoopNotify01-node-10",
+      "name": "Acknowledge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1540,
+        280
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"ok\": true } }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Loan event webhook": {
+      "main": [
+        [
+          {
+            "node": "Verify signature",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Verify signature": {
+      "main": [
+        [
+          {
+            "node": "Signature valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Signature valid?": {
+      "main": [
+        [
+          {
+            "node": "Already handled?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reject (401)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already handled?": {
+      "main": [
+        [
+          {
+            "node": "Acknowledge duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Compose email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose email": {
+      "main": [
+        [
+          {
+            "node": "Send email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send email": {
+      "main": [
+        [
+          {
+            "node": "Remember event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remember event": {
+      "main": [
+        [
+          {
+            "node": "Acknowledge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "errorWorkflow": "LendLoopErrors01"
+  },
+  "pinData": {},
+  "active": false,
+  "tags": []
+}

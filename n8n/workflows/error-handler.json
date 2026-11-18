@@ -1,0 +1,157 @@
+{
+  "id": "LendLoopErrors01",
+  "name": "LendLoop · Error handler",
+  "nodes": [
+    {
+      "id": "LendLoopErrors01-node-1",
+      "name": "On workflow error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "LendLoopErrors01-node-2",
+      "name": "Sign error report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// Report a failed execution back to LendLoop so it shows on the admin page.\nconst crypto = require('crypto');\nconst secret = $env.LENDLOOP_SECRET_N8N_TO_CONVEX;\nif (!secret) throw new Error('LENDLOOP_SECRET_N8N_TO_CONVEX is not set in the n8n environment');\n\nconst { execution = {}, workflow = {} } = $input.first().json;\nconst body = JSON.stringify({\n  executionId: String(execution.id ?? `unknown-${Date.now()}`),\n  workflowName: String(workflow.name ?? 'Unknown workflow'),\n  nodeName: execution.lastNodeExecuted ? String(execution.lastNodeExecuted) : undefined,\n  message: String(execution.error?.message ?? 'Unknown error').slice(0, 1000),\n});\nconst timestamp = String(Math.floor(Date.now() / 1000));\nconst signature = 'v1=' + crypto.createHmac('sha256', secret).update(`${timestamp}.${body}`).digest('hex');\nreturn [{ json: { body, timestamp, signature } }];"
+      }
+    },
+    {
+      "id": "LendLoopErrors01-node-3",
+      "name": "Report to Convex",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        200
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.LENDLOOP_API_URL }}/n8n/workflow-error",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-LendLoop-Timestamp",
+              "value": "={{ $json.timestamp }}"
+            },
+            {
+              "name": "X-LendLoop-Signature",
+              "value": "={{ $json.signature }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.body }}",
+        "options": {
+          "timeout": 10000
+        }
+      }
+    },
+    {
+      "id": "LendLoopErrors01-node-4",
+      "name": "Compose alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        420
+      ],
+      "parameters": {
+        "jsCode": "const { execution = {}, workflow = {} } = $input.first().json;\nreturn [{ json: {\n  to: $env.LENDLOOP_OPS_EMAIL || 'ops@lendloop.local',\n  subject: `[LendLoop] ${workflow.name ?? 'Workflow'} failed`,\n  text: [\n    `Workflow: ${workflow.name ?? 'unknown'}`,\n    `Failed node: ${execution.lastNodeExecuted ?? 'unknown'}`,\n    `Error: ${execution.error?.message ?? 'unknown'}`,\n    `Execution: ${execution.url ?? execution.id ?? 'unknown'}`,\n  ].join('\\n'),\n} }];"
+      }
+    },
+    {
+      "id": "LendLoopErrors01-node-5",
+      "name": "Email on-call",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        440,
+        420
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "LendLoopSmtp0001",
+          "name": "LendLoop SMTP"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput",
+      "parameters": {
+        "fromEmail": "={{ $env.LENDLOOP_MAIL_FROM || 'LendLoop <no-reply@lendloop.local>' }}",
+        "toEmail": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": {
+          "appendAttribution": false
+        }
+      }
+    }
+  ],
+  "connections": {
+    "On workflow error": {
+      "main": [
+        [
+          {
+            "node": "Sign error report",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Compose alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sign error report": {
+      "main": [
+        [
+          {
+            "node": "Report to Convex",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose alert": {
+      "main": [
+        [
+          {
+            "node": "Email on-call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {},
+  "active": false,
+  "tags": []
+}

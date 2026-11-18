@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    "convex/_generated/**",
+    // n8n Code-node sources run inside n8n (require(), $env, $input globals).
+    "n8n/code/**",
   ]),
 ]);
 

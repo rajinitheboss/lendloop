@@ -1,0 +1,5 @@
+{
+  "name": "{{user.full_name}}",
+  "email": "{{user.primary_email_address}}",
+  "picture": "{{user.image_url}}"
+}

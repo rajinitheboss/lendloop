@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# local env templates are committed
+!.env.example
+
+# Clerk keyless/dev files
+.clerk/

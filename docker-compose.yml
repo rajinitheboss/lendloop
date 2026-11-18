@@ -1,0 +1,57 @@
+# Local automation stack: n8n + Mailpit (a fake inbox for every email).
+#
+#   cp n8n/.env.example n8n/.env   # or: npm run setup:local
+#   docker compose up -d
+#
+#   n8n      http://localhost:5678
+#   Mailpit  http://localhost:8025
+name: lendloop
+
+x-n8n-env: &n8n-env
+  env_file: ./n8n/.env
+  environment:
+    # Code nodes read the HMAC secrets from env vars and use Node's crypto.
+    N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+    NODE_FUNCTION_ALLOW_BUILTIN: crypto
+    GENERIC_TIMEZONE: UTC
+    TZ: UTC
+    N8N_DIAGNOSTICS_ENABLED: "false"
+    N8N_PERSONALIZATION_ENABLED: "false"
+
+services:
+  mailpit:
+    image: axllent/mailpit:v1.34.0
+    ports:
+      - "8025:8025" # web inbox
+      - "1025:1025" # SMTP
+    restart: unless-stopped
+
+  # Imports the credential + workflows from ./n8n and publishes them, then exits.
+  n8n-bootstrap:
+    image: n8nio/n8n:2.48.4
+    <<: *n8n-env
+    entrypoint: ["/bin/sh", "/lendloop/scripts/bootstrap.sh"]
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n:/lendloop:ro
+    restart: "no"
+
+  n8n:
+    image: n8nio/n8n:2.48.4
+    <<: *n8n-env
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    extra_hosts:
+      # Lets n8n reach a Convex backend running on your machine.
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      n8n-bootstrap:
+        condition: service_completed_successfully
+      mailpit:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  n8n_data:
