@@ -126,6 +126,10 @@ The seed adds three neighbours and their tools, a request waiting for you, and a
 * In n8n, open **LendLoop · Overdue reminders** and click *Execute workflow*. Overdue borrowers get a reminder, and *My requests* shows *"Overdue reminder sent just now"*. Run it again the same day and nothing is sent twice.
 * Stop Mailpit (`docker compose stop mailpit`) and request something. The webhook run fails, the error workflow records it under **Admin → Automation**, and Convex retries with backoff until Mailpit is back.
 
+#### Deploying to Vercel
+
+`vercel.json` runs `npx convex deploy --cmd 'npm run build'`, which pushes the Convex functions to your production deployment and sets `NEXT_PUBLIC_CONVEX_URL` for the build. In Vercel, set `CONVEX_DEPLOY_KEY` (a production deploy key from the Convex dashboard), `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY`. On the Convex production deployment, set `CLERK_JWT_ISSUER_DOMAIN` (and the n8n variables if your n8n is publicly reachable; otherwise notifications are recorded as *skipped*).
+
 #### Using Convex cloud or n8n cloud instead
 
 Convex cloud functions can't reach `localhost`. Expose n8n with a tunnel, for example `cloudflared tunnel --url http://localhost:5678`, or use n8n Cloud. Then set `N8N_LOAN_EVENTS_WEBHOOK_URL` to the public webhook URL, and set `LENDLOOP_API_URL` in n8n to your deployment's `.convex.site` URL. On Linux, `host.docker.internal` resolves to the Docker bridge, so a Convex backend bound to `127.0.0.1` isn't reachable from the container. Run the backend on `0.0.0.0` or use a cloud deployment.
