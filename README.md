@@ -16,21 +16,36 @@ A neighbourhood tool-lending board. Neighbours list tools, request to borrow the
 | --- | --- | --- |
 | ![Admin](docs/screenshots/admin-automation.png) | ![Mailpit](docs/screenshots/mailpit.png) | ![Mobile](docs/screenshots/mobile-dark.png) |
 
+**Live demo:** https://lendloop-jet.vercel.app. Sign-in, listings, requests, approvals and the admin page all work. Emails are switched off in the hosted demo, because n8n runs locally (see [Run it locally](#run-it-locally) for the full automation stack). Loan cards show that state honestly: "No email sent (notifications off)".
+
+## Technical highlights
+
+- **Role-based access control enforced in the backend.** Every public Convex function starts with `requireUser` or `requireAdmin`, then checks ownership against the database row. Identity comes only from the verified Clerk JWT (`ctx.auth`), never from arguments. New users are always `user`, and admins can only be created through an internal mutation from the CLI. Tests call the functions as the wrong user and expect `FORBIDDEN`.
+- **Transactional outbox for notifications.** A loan's status change and its notification row commit in the same Convex transaction. A scheduled action delivers it to n8n with a 10 s timeout and retries at 10 s, 1 min, 5 min and 30 min, then marks it `failed` and shows it in Admin → Automation. Events are never lost or silently dropped.
+- **HMAC-signed integration in both directions.** Convex → n8n webhooks and n8n → Convex calls carry `X-LendLoop-Timestamp` and `X-LendLoop-Signature: v1=HMAC_SHA256(secret, "timestamp.rawBody")`. There's one secret per direction, a 5-minute replay window, verification over the exact raw bytes, and constant-time comparison.
+- **Idempotent write-backs everywhere.** Each transition has its own key (`notification:<loanId>:<type>`). n8n de-duplicates by event id, storing it only after a successful send. Reminders use a per-loan-per-day key issued by Convex (`reminder:<loanId>:<date>`), where `failed → sent` upgrades the same row and duplicate `sent` calls are no-ops. Error reports are keyed by execution id.
+- **No silent failures.** n8n HTTP and SMTP nodes retry. A reminder that still fails is written back as `failed` with the SMTP error and retried on the next run. An n8n error workflow reports every failed execution to Convex (`/n8n/workflow-error`) and emails on-call.
+- **Data minimisation.** The public page shows name and category only. Neighbours see a lender's first name. n8n receives just the recipient's first name and email, the tool name and the dates, never the other party or the free-text message, and a test enforces this. The outbox stores ids, and payloads are built at send time.
+- **Auditability.** Listings are soft-deleted (who, when, why), and an append-only audit log is written in the same transaction as each change, readable by admins only.
+- **Bonus:** each loan shows its recent automation activity ("Emailed you about the approval", "Overdue reminder sent 2 days ago"), live via Convex's realtime queries.
+- **Tested:** 16 backend tests with `convex-test` cover access control, booking rules, payload minimisation, signature rejection (missing, wrong, stale, tampered) and idempotency. The whole system was also exercised end to end against a running n8n and Mailpit: forged signature, replayed event, SMTP outage and recovery.
+
 ---
 
 ## Contents
 
-1. [What's in the box](#whats-in-the-box)
-2. [Run it locally](#run-it-locally)
-3. [Environment variables](#environment-variables)
-4. [Architecture](#architecture)
-5. [Roles and access control](#roles-and-access-control)
-6. [Securing the Convex ↔ n8n integration](#securing-the-convex--n8n-integration)
-7. [Data minimisation](#data-minimisation)
-8. [The n8n workflows](#the-n8n-workflows)
-9. [Tests](#tests)
-10. [What I'd change for production](#what-id-change-for-production)
-11. [Project structure](#project-structure)
+1. [Technical highlights](#technical-highlights)
+2. [What's in the box](#whats-in-the-box)
+3. [Run it locally](#run-it-locally)
+4. [Environment variables](#environment-variables)
+5. [Architecture](#architecture)
+6. [Roles and access control](#roles-and-access-control)
+7. [Securing the Convex ↔ n8n integration](#securing-the-convex--n8n-integration)
+8. [Data minimisation](#data-minimisation)
+9. [The n8n workflows](#the-n8n-workflows)
+10. [Tests](#tests)
+11. [What I'd change for production](#what-id-change-for-production)
+12. [Project structure](#project-structure)
 
 More detail: [docs/DECISIONS.md](docs/DECISIONS.md) covers the trade-offs, and [docs/PRODUCTION.md](docs/PRODUCTION.md) has the full production checklist.
 
@@ -354,6 +369,7 @@ convex/
 src/
   app/page.tsx         public landing page
   app/(app)/*          signed-in pages (browse, listings, requests, incoming, admin)
+  app/sign-in, sign-up Clerk sign-in/up hosted on the app's own domain
   components/          UI kit, dialogs, app shell, loan cards
   proxy.ts             Clerk: redirect signed-out visitors
 n8n/
@@ -363,6 +379,7 @@ n8n/
   scripts/             bootstrap.sh (import + publish), build-workflows.mjs
 docker-compose.yml     n8n + Mailpit (+ one-shot bootstrap)
 scripts/setup-local.mjs  generate secrets, write n8n/.env, set Convex env
+vercel.json            build = `convex deploy --cmd 'npm run build'`
 ```
 
 ---
