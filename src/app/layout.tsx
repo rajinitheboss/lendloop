@@ -21,7 +21,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col font-sans">
-        <ClerkProvider>
+        <ClerkProvider signInUrl="/sign-in" signUpUrl="/sign-up" signInFallbackRedirectUrl="/browse" signUpFallbackRedirectUrl="/browse">
           <ConvexClientProvider>{children}</ConvexClientProvider>
         </ClerkProvider>
         <Toaster position="bottom-right" richColors closeButton />

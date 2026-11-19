@@ -11,9 +11,13 @@ function isAppPath(pathname: string): boolean {
   return APP_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }
 
-export default clerkMiddleware(async (auth, req) => {
-  if (isAppPath(req.nextUrl.pathname)) await auth.protect();
-});
+export default clerkMiddleware(
+  async (auth, req) => {
+    if (isAppPath(req.nextUrl.pathname)) await auth.protect();
+  },
+  // Our own sign-in/up pages (src/app/sign-in, src/app/sign-up).
+  { signInUrl: "/sign-in", signUpUrl: "/sign-up" },
+);
 
 export const config = {
   matcher: [
